@@ -84,6 +84,7 @@ EXCLUDED_REPORTS = {
     "RBLN-CR13_SRT_20260728T235756_rbln-suma-srt-02",
     "RBLN-CR13_SRT_20260728T191357_rbln-suma-srt-02",
     "RBLN-CR13_SRT_20260824T095728_rbln-suma-srt-02",
+    "RBLN-CR13_SRT_20260824T160142_rbln-suma-srt-02",
 }
 
 
