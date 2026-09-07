@@ -51,6 +51,10 @@ WEEK_LABELS = {
     "33": "DVT10",
     "34": "DVT11",
     "35": "DVT12",
+    "36": "DVT13",
+    "37": "DVT14",
+    "38": "DVT15",
+    "39": "PVT4",
 }  # unlisted weeks keep their raw value
 
 # --- report validity filter (which reports are loaded into the dataset) -----
