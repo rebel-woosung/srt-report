@@ -9,7 +9,10 @@ workload's run span. Dots are neutral except the two bins in DOT_BINS (f31 HBM /
 which carry their own hue and are named in the legend; the run source is never
 encoded in the marker (the tooltip carries it, along with the fail_detail text).
 Each workload is identified by the COLOUR OF ITS NAME (color_slot -> the --t* text
-steps), in the chart gutter and in the table alike.
+steps), in the chart gutter and in the table alike. The chart draws only the
+workloads that actually failed (a row with no dot is noise), but the TABLE under it
+lists every WORKLOADS slot — a 0-fail workload shows as a dimmed 0 row, so a missing
+name means "not in the config", never "no fail".
 
 Span / position — the stage times are FIXED constants (STAGE_DURATION_S), not the
 per-report CR13.json values, so every run is measured on one comparable scale:
@@ -385,21 +388,47 @@ def _row(wl: str, rows: list[dict], ty: float, slot: int) -> list[str]:
     return parts
 
 
+def slot_span_text(stage: str) -> str:
+    """The stage's fixed span, for a slot that has no fail to measure one from."""
+    d = STAGE_DURATION_S.get(stage)
+    if not d:
+        return "–"
+    if stage == "iteration":
+        return f"{d * ITERATION_REPEAT}s ({d}s x {ITERATION_REPEAT})"
+    return f"{d}s"
+
+
+def table_groups(groups: list[tuple[str, list[tuple[str, list[dict]]]]]
+                 ) -> list[tuple[str, list[tuple[int, str, list[dict]]]]]:
+    """[(stage, [(test unit, workload, rows), ...]), ...] over EVERY WORKLOADS slot in
+    config order — a slot with no fail keeps its row with an empty list."""
+    by_stage = {stage: dict(items) for stage, items in groups}
+    return [(stage, [(unit, wl, by_stage.get(stage, {}).get(wl, []))
+                     for unit, wl in wls])
+            for stage, wls in WORKLOADS.items()]
+
+
 def render_table(groups: list[tuple[str, list[tuple[str, list[dict]]]]]) -> str:
-    """One table for every stage; the stage cell spans its workload rows."""
+    """One table for every stage; the stage cell spans its workload rows. Unlike the
+    chart the table lists all of WORKLOADS, so a 0-fail workload is visibly 0 rather
+    than missing."""
     rows_html = []
-    for stage, items in groups:
-        for i, (wl, rows) in enumerate(items):
-            latest = max(r["_pct"] for r in rows)
+    for stage, items in table_groups(groups):
+        for i, (unit, wl, rows) in enumerate(items):
             stage_td = (f'<td class="stg" rowspan="{len(items)}">'
                         f'{esc(STAGE_LABEL.get(stage, stage) or "(stage 미상)")}</td>') if i == 0 else ""
+            cls = " ".join(c for c in ("group-start" if i == 0 else "",
+                                       "" if rows else "zero") if c)
+            units = units_text(rows) if rows else str(unit)
+            span = span_text(rows) if rows else slot_span_text(stage)
+            latest = f'{round(max(r["_pct"] for r in rows))}%' if rows else "–"
             rows_html.append(
-                f'<tr class="{"group-start" if i == 0 else ""}">{stage_td}'
+                f'<tr class="{cls}">{stage_td}'
                 f'<td class="b t{color_slot(stage, wl)}">{esc(wl)}</td>'
-                f'<td class="unit">{esc(units_text(rows))}</td>'
+                f'<td class="unit">{esc(units)}</td>'
                 f'<td class="num">{len(rows)}</td>'
-                f'<td class="num">{esc(span_text(rows))}</td>'
-                f'<td class="num hi">{round(latest)}%</td></tr>'
+                f'<td class="num">{esc(span)}</td>'
+                f'<td class="num hi">{latest}</td></tr>'
             )
     return ("<table><thead><tr><th>stage</th><th>workload</th><th>test unit</th><th>fails</th>"
             "<th>span</th><th>latest</th>"
@@ -409,7 +438,8 @@ def render_table(groups: list[tuple[str, list[tuple[str, list[dict]]]]]) -> str:
 def group_rows(rows: list[dict]) -> list[tuple[str, list[tuple[str, list[dict]]]]]:
     """[(stage, [(workload, rows), ...]), ...] — stages and workloads in WORKLOADS
     order (run order / test unit id), so the chart always reads like the config.
-    Slots with no fail are left out."""
+    Slots with no fail are left out — the chart has nothing to draw for them
+    (table_groups puts them back for the table)."""
     by_stage: dict[str, dict[str, list[dict]]] = defaultdict(lambda: defaultdict(list))
     for r in rows:
         by_stage[(r.get("stage") or "").strip()][r["_wl"]].append(r)
@@ -444,11 +474,9 @@ def render_html(site: str, rows: list[dict]) -> str:
     groups = group_rows(rows)
     n_wl = len({r["_wl"] for r in rows})
     axis = "워크로드 수행시간 대비 Fail 발생시간 % (예: 790s / 1580s = 50%)"
-    if groups:
-        body = (f'<div class="card">{render_svg(groups, axis)}</div>'
-                f'<div class="scroll">{render_table(groups)}</div>')
-    else:
-        body = "<p>표시할 워크로드 fail 데이터가 없습니다.</p>"
+    chart = (f'<div class="card">{render_svg(groups, axis)}</div>' if groups
+             else "<p>표시할 워크로드 fail 데이터가 없습니다.</p>")
+    body = chart + f'<div class="scroll">{render_table(groups)}</div>'
     return f"""<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>{esc(site)} · fail timing by workload</title><style>
@@ -516,6 +544,8 @@ def render_html(site: str, rows: list[dict]) -> str:
  td.stg{{font-weight:700;background:var(--head);white-space:nowrap;vertical-align:middle}}
  td.unit{{color:var(--secondary);font-size:12px}} td.src{{color:var(--secondary);font-size:12px}}
  tr.group-start > td{{border-top:2px solid var(--border)}}
+ /* fail 0건 슬롯: 표에는 남기되 색은 유지한 채 흐리게 */
+ tr.zero > td{{opacity:.5}} tr.zero td.hi{{font-weight:600;color:var(--muted)}}
  td.hi{{font-weight:700;color:var(--text)}}
 </style></head><body><div class="wrap">
 <a class="back" href="result.html">&larr; SRT Result</a>
@@ -524,6 +554,7 @@ def render_html(site: str, rows: list[dict]) -> str:
  <li>workload 수행 중 발생한 fail만 집계 (진입 전 fail 제외)</li>
  <li>excluded·retest run의 fail도 함께 집계 (단, 중단된 run = bin f99-99 는 제외)</li>
  <li>워크로드 .bin 파일 자체를 못 연 run(설비 문제)의 fail은 제외</li>
+ <li>아래 표는 설정된 workload 전부를 나열 — fail 0건 슬롯은 흐리게 (차트에는 점이 없어 미표시)</li>
 </ul>
 {render_legend()}
 {body}
