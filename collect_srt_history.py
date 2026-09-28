@@ -22,7 +22,8 @@ common.is_spurious_fail) and ``true_fail`` (the rest); A1..D1 break the passes
 down by module_grade (TEST_RESULT_*.json). cp_fw_version and dcl_clock come from
 the run's config (test_config.json target_fw / workloads CR13.json test_unit_1
 dcluster_clk). ``inlet_min`` / ``inlet_max`` are the server intake temperature
-range over the whole run (see inlet_range).
+range over the whole run (see inlet_range). ``fails`` lists the run's FAIL
+devices as ``slot:serial:bin`` (``;``-joined) for the History fail drill-down.
 
 No CLI flags: edit the constants below, then run ``python collect_srt_history.py``.
 """
@@ -44,7 +45,7 @@ CSV_COLUMNS = [
     "run", "source", "round", "exclude_reason", "week", "start_time", "end_time",
     "cp_fw_version", "srt_version", "dcl_clock",
     "total", "pass", "true_fail", "false_fail", *GRADES,
-    "inlet_min", "inlet_max",
+    "inlet_min", "inlet_max", "fails",
 ]
 
 
@@ -124,17 +125,21 @@ def summarize_run(report_dir: Path, cp_fw: str, source: str,
     serials = run_serials(report_dir, recs)
     grades: Counter = Counter()
     pass_total = true_fail = false_fail = 0
+    fails: list[str] = []
     for rec, sid in zip(recs, serials):
         ex = rec.get("extra", {})
         if str(rec.get("result", "")).upper() == "PASS":
             pass_total += 1
             grades[str(ex.get("module_grade", ""))] += 1
-        elif common.is_spurious_fail(sid, str(ex.get("bin", ""))):
+            continue
+        if common.is_spurious_fail(sid, str(ex.get("bin", ""))):
             false_fail += 1
         else:
             true_fail += 1
+        bin_code = str(ex.get("bin", "") or rec.get("binning1_reason", "")).strip()
+        fails.append(f'{str(ex.get("slot", "")).strip()}:{sid or str(rec.get("card_serial_num", "")).strip()}:{bin_code}')
 
-    weeks = sorted({common.week_label(common.week_of(sid)) for sid in serials if sid})
+    weeks = sorted({common.build_label(sid) for sid in serials if sid})
     inlet_min, inlet_max = inlet_range(report_dir)
 
     cfg = next(report_dir.rglob("CR13.json"), None)
@@ -156,6 +161,7 @@ def summarize_run(report_dir: Path, cp_fw: str, source: str,
         "false_fail": false_fail,
         "inlet_min": inlet_min,
         "inlet_max": inlet_max,
+        "fails": ";".join(fails),
     }
     for g in GRADES:
         row[g] = grades.get(g, 0)

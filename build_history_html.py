@@ -25,6 +25,10 @@ carries ``dcl_clock``, which this table leaves out (it has not varied per run).
 ``fail`` is the run's FAIL devices, both real and spurious; when some are listed
 spurious fails (common.SPURIOUS_FAIL_BY_SERIAL) the count is annotated
 ``(false N)``, so a run whose only fails are known-good cards reads as one.
+Clicking a non-zero fail count unfolds a detail row under the run listing each
+FAIL device (slot / serial / bin from srt_history.csv's ``fails``), enriched with
+the matching fail.csv events (reason, fail_detail, stage, workload, fail time)
+when the run has them.
 
 Called by build_result_html (the CSS lives in its stylesheet); not a standalone
 page.
@@ -38,6 +42,7 @@ import re
 from pathlib import Path
 
 import build_fail_data as bfd
+import build_fail_html as bfh
 import common
 
 # ..._SRT_20260709T141041_rbln-suma-srt-03 -> ("20260709T141041", "rbln-suma-srt-03")
@@ -55,6 +60,7 @@ COLUMNS = [
 # (radio id suffix, label, source value it keeps) — "" keeps every row.
 TABS = [("all", "All", ""), ("1st", "1st", "1st"),
         ("retest", "retest", "retest"), ("excluded", "excluded", "excluded")]
+DETAIL_COLUMNS = ["slot", "serial", "bin", "reason", "stage", "workload", "fail_at"]
 
 
 def num(value: str) -> int:
@@ -121,6 +127,51 @@ def type_cell(row: dict) -> str:
     return f'<td class="type">{"".join(tags)}</td>'
 
 
+def parse_fails(row: dict) -> list[tuple[str, str, str]]:
+    """srt_history.csv's ``fails`` as (slot, serial, bin), in slot order."""
+    out = []
+    for item in (row.get("fails") or "").split(";"):
+        if item.strip():
+            slot, serial, bin_code = (item.split(":") + ["", "", ""])[:3]
+            out.append((slot.strip(), serial.strip(), bin_code.strip()))
+    return sorted(out, key=lambda f: (num(f[0]), f[1]))
+
+
+def detail_row(row: dict, events: dict[tuple[str, str], list[dict]]) -> str:
+    """The hidden drill-down row under a run: one line per fail.csv event of each
+    FAIL device, or a bin-only line when fail.csv has no event for it."""
+    fails = parse_fails(row)
+    if not fails:
+        return ""
+    run = (row.get("run") or "").strip()
+    lines = []
+    for slot, serial, bin_code in fails:
+        false_tag = (' <span class="htag t-false">false</span>'
+                     if common.is_spurious_fail(serial, bin_code) else "")
+        evs = events.get((run, serial)) or [{}]
+        for ev in evs:
+            reason = html.escape((ev.get("reason") or "").strip())
+            detail = html.escape((ev.get("fail_detail") or "").strip())
+            reason_html = (reason + (f' <span class="sub">({detail})</span>' if detail else "")
+                           ) or '<span class="empty">&ndash;</span>'
+            lines.append(
+                "<tr>"
+                + cell(slot, "num")
+                + cell(serial)
+                + f'<td><b>{html.escape((ev.get("bin") or bin_code).strip())}</b>{false_tag}</td>'
+                + f"<td>{reason_html}</td>"
+                + cell(bfh.stage_label(ev))
+                + cell(ev.get("filename", ""))
+                + ts_cell(ev.get("fail_at", ""))
+                + "</tr>"
+            )
+    head = "".join(f"<th>{html.escape(c)}</th>" for c in DETAIL_COLUMNS)
+    source = html.escape((row.get("source") or "").strip() or "1st")
+    return (f'<tr class="s-{source} hdetail"><td colspan="{len(COLUMNS)}">'
+            f'<table class="dtable"><thead><tr>{head}</tr></thead>'
+            f'<tbody>{"".join(lines)}</tbody></table></td></tr>')
+
+
 def result_cells(row: dict) -> str:
     """total / pass / fail / grade-split. fail folds the spurious fails back in (they
     are FAIL devices in the run even though the dataset counts them as good cards) and
@@ -130,15 +181,18 @@ def result_cells(row: dict) -> str:
     failed = true_fail + false_fail
     note = f' <span class="sub">(false {false_fail})</span>' if false_fail else ""
     grades = "/".join(str(num(row.get(g))) for g in ("A1", "B1", "C1", "D1"))
+    fail_txt = f"{failed}{note}"
+    if failed and parse_fails(row):
+        fail_txt = f'<button type="button" class="fail-toggle">{fail_txt}</button>'
     return (
         f'<td class="num">{total}</td>'
         f'<td class="num{" pass" if passed else ""}">{passed}</td>'
-        f'<td class="num{" fail" if failed else ""}">{failed}{note}</td>'
+        f'<td class="num{" fail" if failed else ""}">{fail_txt}</td>'
         f'<td class="num">{grades}</td>'
     )
 
 
-def render_row(row: dict) -> str:
+def render_row(row: dict, events: dict[tuple[str, str], list[dict]]) -> str:
     source = (row.get("source") or "").strip() or "1st"
     return (
         f'<tr class="s-{html.escape(source)}">'
@@ -153,6 +207,7 @@ def render_row(row: dict) -> str:
         + cell(row.get("inlet_min", ""), "num")
         + cell(row.get("inlet_max", ""), "num")
         + "</tr>"
+        + detail_row(row, events)
     )
 
 
@@ -166,6 +221,17 @@ def load_history(csv_path: Path) -> list[dict]:
     return sorted(rows, key=lambda r: r.get("run", ""), reverse=True)
 
 
+def load_fail_events(csv_path: Path) -> dict[tuple[str, str], list[dict]]:
+    """fail.csv events keyed by (run, serial), in file order (all buckets)."""
+    events: dict[tuple[str, str], list[dict]] = {}
+    if not csv_path.is_file():
+        return events
+    with open(csv_path, newline="", encoding="utf-8") as fh:
+        for r in csv.DictReader(fh):
+            events.setdefault((r.get("run", ""), r.get("serial_number", "")), []).append(r)
+    return events
+
+
 def counts_line(rows: list[dict]) -> str:
     """The per-type run counts under the section title."""
     if not rows:
@@ -177,7 +243,8 @@ def counts_line(rows: list[dict]) -> str:
             "one row per SRT run")
 
 
-def render_history(rows: list[dict]) -> str:
+def render_history(rows: list[dict],
+                   events: dict[tuple[str, str], list[dict]] | None = None) -> str:
     """The History section's markup: the type tab bar plus the run table. The
     selectors the tabs rely on (``#hs-*``, ``.s-*`` row classes) are static, so they
     live in build_result_html's stylesheet rather than being generated here."""
@@ -186,7 +253,7 @@ def render_history(rows: list[dict]) -> str:
                 "collect_srt_history.py first.</p>")
 
     head = "".join(f'<th class="{cls}">{html.escape(label)}</th>' for label, cls in COLUMNS)
-    body = "\n".join(render_row(r) for r in rows)
+    body = "\n".join(render_row(r, events or {}) for r in rows)
 
     radios, labels = [], []
     for key, label, source in TABS:

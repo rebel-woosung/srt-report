@@ -190,9 +190,20 @@ CSS = """
   .t-excluded { color: var(--fail); border-color: var(--fail); }
   .t-round { color: var(--secondary); border-color: var(--grid); margin-left: 4px; }
   .histwrap > input[type="radio"] { position: absolute; opacity: 0; width: 0; height: 0; }
-  #hs-1st:checked ~ .scroll tbody tr:not(.s-1st),
-  #hs-retest:checked ~ .scroll tbody tr:not(.s-retest),
-  #hs-excluded:checked ~ .scroll tbody tr:not(.s-excluded) { display: none; }
+  #hs-1st:checked ~ .scroll > table > tbody > tr:not(.s-1st),
+  #hs-retest:checked ~ .scroll > table > tbody > tr:not(.s-retest),
+  #hs-excluded:checked ~ .scroll > table > tbody > tr:not(.s-excluded) { display: none; }
+  .fail-toggle { font: inherit; color: inherit; background: none; cursor: pointer;
+    border: 1px solid color-mix(in srgb, var(--fail) 40%, transparent); border-radius: 4px;
+    padding: 0 6px; }
+  .fail-toggle:hover, tr.open .fail-toggle { background: color-mix(in srgb, var(--fail) 12%, transparent); }
+  .hist-section tbody tr.hdetail { display: none; }
+  .hist-section tbody tr.hdetail.open { display: table-row; }
+  .hist-section tr.hdetail > td { padding: 4px 12px 12px 40px; background: var(--head-bg); border-top: 0; }
+  .dtable { width: auto; min-width: 60%; border: 1px solid var(--grid); border-radius: 6px; }
+  .hist-section .dtable th { text-align: left; padding: 5px 10px; }
+  .hist-section .dtable td { padding: 5px 10px; font-size: 13px; }
+  .t-false { color: var(--muted); border-color: var(--grid); margin-left: 4px; }
   #hs-all:checked ~ .topbar label[for="hs-all"],
   #hs-1st:checked ~ .topbar label[for="hs-1st"],
   #hs-retest:checked ~ .topbar label[for="hs-retest"],
@@ -294,11 +305,25 @@ SUMMARY_FILTER_JS = """
 """
 
 
+HISTORY_FAIL_JS = """
+document.getElementById("history").addEventListener("click", function (e) {
+  var btn = e.target.closest(".fail-toggle");
+  if (!btn) return;
+  var row = btn.closest("tr");
+  var detail = row.nextElementSibling;
+  if (!detail || !detail.classList.contains("hdetail")) return;
+  row.classList.toggle("open");
+  detail.classList.toggle("open");
+});
+"""
+
+
 def render_html(devices: list[dict], builds: dict[str, dict], rows: list[dict],
-                stats: dict[str, dict], history: list[dict]) -> str:
+                stats: dict[str, dict], history: list[dict],
+                history_events: dict | None = None) -> str:
     summary_tbl = csr.render_summary_table(builds)
     fail_markup, dynamic_css = bfh.render_fail_tabs(rows, stats)
-    history_markup = bhh.render_history(history)
+    history_markup = bhh.render_history(history, history_events)
 
     n_pass = sum(1 for d in devices if d["result"] == "Pass")
     n_fail = len(devices) - n_pass
@@ -316,7 +341,7 @@ def render_html(devices: list[dict], builds: dict[str, dict], rows: list[dict],
 
     # per-device rows for the client-side date filter (see SUMMARY_FILTER_JS)
     devices_json = json.dumps([
-        {"build": d["build"], "week_num": d.get("week_num", ""), "result": d["result"],
+        {"build": d["build"], "week_num": common.build_order(d["serial"]), "result": d["result"],
          "grade": d.get("grade", ""), "first_fail": d["first_fail"], "retested": d["retested"],
          "second_fail": d["second_fail"], "fw_version": d.get("fw_version", ""),
          "srt_version": d.get("srt_version", ""), "end_time": d.get("end_time", "")}
@@ -365,7 +390,7 @@ def render_html(devices: list[dict], builds: dict[str, dict], rows: list[dict],
   </div>"""
 
     script = ("<script>\nconst SUMMARY_DEVICES = " + devices_json + ";\n"
-              + SUMMARY_FILTER_JS + "</script>")
+              + SUMMARY_FILTER_JS + HISTORY_FAIL_JS + "</script>")
 
     return (
         '<!DOCTYPE html>\n<html lang="en">\n<head>\n'
@@ -401,7 +426,9 @@ def main(site: str = common.DEFAULT_SITE) -> int:
 
     out_path = data_dir / "viewer" / "result.html"
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(render_html(devices, builds, rows, stats, history), encoding="utf-8")
+    history_events = bhh.load_fail_events(fail_csv)
+    out_path.write_text(render_html(devices, builds, rows, stats, history, history_events),
+                        encoding="utf-8")
 
     n_pass = sum(1 for d in devices if d["result"] == "Pass")
     print(f"Wrote result.html [{len(builds)} builds, {len(devices)} devices, "

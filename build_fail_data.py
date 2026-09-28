@@ -66,7 +66,7 @@ from pathlib import Path
 
 import common
 import find_fail_detail
-from common import week_label, week_of  # policy in common.py (single source)
+from common import build_label, week_label, week_of  # policy in common.py (single source)
 
 RETEST_DIRNAME = "_retest"      # bucket holding retest runs      -> source "retest"
 EXCLUDED_DIRNAME = "_excluded"  # bucket holding rejected runs    -> source "excluded"
@@ -650,7 +650,7 @@ def write_fail_csv(events: list[dict], meta: dict, out_path: Path, unparsed: int
                 "workload_start_at": ev["workload_start_at"],
                 "elapsed_s": ev["elapsed_s"],
                 "workload_duration_s": ev["workload_duration_s"],
-                "week": week_label(ev["week"]),
+                "week": build_label(ev["sid"]),
                 "serial_number": ev["sid"],
                 "device_id": ev["dev"],
                 "slot": ev["slot"],

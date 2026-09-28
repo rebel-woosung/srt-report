@@ -52,10 +52,20 @@ WEEK_LABELS = {
     "34": "DVT11",
     "35": "DVT12",
     "36": "DVT13",
-    "37": "DVT14",
-    "38": "DVT15",
-    "39": "PVT4",
+    "37": "DVT14/15",
+    "38": "PVT4",
+    "39": "PVT5",
+    "40": "PVT6",
+    "41": "MP1",
+    "42": "MP2",
+    "43": "MP3",
+    "44": "MP4",
 }  # unlisted weeks keep their raw value
+# weeks that hold more than one build, split by serial range (inclusive):
+# {week: [(first serial, last serial, label), ...]} in build order
+WEEK_SERIAL_SPLITS = {
+    "37": [(52637001, 52637082, "DVT14"), (52637083, 52637162, "DVT15")],
+}
 
 # --- report validity filter (which reports are loaded into the dataset) -----
 VALID_WORKLOAD_DIR = "/data/rbcn/rb-srt-main-engine/workload"
@@ -200,6 +210,33 @@ def week_of(serial: str) -> str:
 def week_label(week: str) -> str:
     """Display label for a week (28 -> DVT8, 32 -> DVT9; others unchanged)."""
     return WEEK_LABELS.get(week, week)
+
+
+def week_split(serial: str) -> tuple[int, str] | None:
+    """(index, label) of the WEEK_SERIAL_SPLITS range this serial falls in, else None."""
+    if not serial.isdigit():
+        return None
+    for i, (lo, hi, label) in enumerate(WEEK_SERIAL_SPLITS.get(week_of(serial), [])):
+        if lo <= int(serial) <= hi:
+            return i, label
+    return None
+
+
+def build_label(serial: str) -> str:
+    """Display build label for a card serial: its serial-range split if its week is
+    split (52637083 -> DVT15), else the week's label (week_label)."""
+    split = week_split(serial)
+    return split[1] if split else week_label(week_of(serial))
+
+
+def build_order(serial: str) -> int:
+    """Recency sort key for a serial's build (higher = newer): the week, with the
+    split index breaking ties inside a split week; -1 when the week is unknown."""
+    week = week_of(serial)
+    if not week.isdigit():
+        return -1
+    split = week_split(serial)
+    return int(week) * 10 + (split[0] if split else 0)
 
 
 def is_spurious_fail(serial: str, bin_code: str) -> bool:

@@ -161,10 +161,15 @@ excluded를 버리지만, 여기는 "실제로 뭘 돌렸나"를 보는 페이�
 다시 담는 경우가 있고, 그러면 같은 fail이 리포트 수만큼 점으로 찍힙니다. 이건 리포트에 기록된
 그대로 두고 별도 병합은 하지 않습니다.
 
-점 색은 bin을 나타냅니다 — **f31(HBM)** 빨강, **f22(HIGH_TEMP)** 청록, 나머지는 중립 회색
-(`DOT_BINS`). 범례에 bin 코드가 함께 적혀 있어 색만으로 판단하지 않아도 됩니다. 점 툴팁에는
-`reason bin (fail_detail)`이 들어가서, bin 코드만으로는 안 보이는 실제 fail 내용(예: Golden
-mismatch — test unit별로 f171/f174/f192/f234 … 로 흩어져 binning됩니다)도 확인할 수 있습니다.
+점의 색·모양은 fail 종류를 나타냅니다 — **f31(HBM)** 빨강 원, **f22(HIGH_TEMP)** 청록 원,
+**Golden mismatch** 보라 마름모, **ERR_INVALID_CMD** 초록 삼각형, 나머지는 중립 회색 원. 앞의
+둘은 bin 코드(`DOT_BINS`)로 잡고, 뒤의 둘은 자기 bin이 없어서 — Golden mismatch는 test unit별로
+f171/f174/f192/f234 … 로 흩어져 binning되고, invalid cmd는 reason에만 이름이 있습니다 — 각각
+`fail_detail`(`DOT_DETAILS`) / `reason`(`DOT_REASONS`)으로 잡습니다. 범례에 넷 다 이름이 적혀
+있어 색만으로 판단하지 않아도 되고, 뒤의 둘은 모양까지 다릅니다 (라이트의 초록↔빨강, 다크의
+보라↔청록이 CVD 분리 6~8 구간이라 모양이 보조 인코딩으로 필요합니다). 점 툴팁에는
+`reason bin (fail_detail)`이 그대로 들어가서, 색으로 구분하지 않는 나머지 fail의 실제 내용도
+확인할 수 있습니다.
 
 workload는 **이름 글자 자체의 색**으로 구분합니다 (차트 왼쪽 거터 + 아래 표 모두. 검증된 8색
 categorical 팔레트, 라이트/다크 각각 별도 스텝). 같은 workload는 stage가 달라도 같은 색이라

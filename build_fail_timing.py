@@ -5,9 +5,11 @@ retrace fails, split **first by stage** and then, inside each stage, one row per
 **workload of the current pega SRT config** (WORKLOADS below; a fail is placed by
 its (stage, test unit) slot, so a run of an older .bin still lands on the row that
 slot owns and rows keep one name across revisions). Dots sit at the fail time as a % of that
-workload's run span. Dots are neutral except the two bins in DOT_BINS (f31 HBM / f22 HIGH_TEMP),
-which carry their own hue and are named in the legend; the run source is never
-encoded in the marker (the tooltip carries it, along with the fail_detail text).
+workload's run span. Markers are neutral dots except the four kinds in DOT_LABELS
+(f31 HBM / f22 HIGH_TEMP by bin, Golden mismatch by fail_detail, ERR_INVALID_CMD by
+reason), which carry their own hue — and, for the latter two, their own shape — and
+are named in the legend; the run source is never encoded in the marker (the tooltip
+carries it, along with the fail_detail text).
 Each workload is identified by the COLOUR OF ITS NAME (color_slot -> the --t* text
 steps), in the chart gutter and in the table alike. The chart draws only the
 workloads that actually failed (a row with no dot is noise), but the TABLE under it
@@ -120,9 +122,26 @@ INTERRUPTED_BIN = "f99-99"
 # fail.csv and every other consumer keep CR03 rows.
 MODEL = "RBLN-CR13"
 
-# Bins that get their own dot colour (everything else is the neutral dot). Both are
-# also named in the legend, so the colour is never the only carrier.
-DOT_BINS = {"f31": "HBM", "f22": "HIGH_TEMP"}
+# Fail kinds that get their own marker (everything else is the neutral dot). Two are
+# keyed by the bin code; the other two have no bin of their own — Golden mismatch is
+# binned per test unit (f171/f174/f192/…) and only fail_detail names it, and an
+# invalid command is only named by its reason — so they are matched on those fields.
+# All four are named in the legend, so the marker is never the only carrier.
+DOT_BINS = {"f31": "f31 HBM", "f22": "f22 HIGH_TEMP"}
+DOT_DETAILS = {"Golden mismatch": "golden"}
+DOT_REASONS = {"ERR_INVALID_CMD": "invcmd"}
+DOT_LABELS = {**DOT_BINS, "golden": "Golden mismatch", "invcmd": "ERR_INVALID_CMD"}
+
+
+def dot_kind(r: dict) -> str:
+    """The marker class of one fail: its bin when that bin has its own marker, else
+    the kind its fail_detail / reason names, else '' (the neutral dot)."""
+    if (binc := (r.get("bin") or "").strip()) in DOT_BINS:
+        return binc
+    if kind := DOT_DETAILS.get((r.get("fail_detail") or "").strip()):
+        return kind
+    return DOT_REASONS.get((r.get("reason") or "").strip(), "")
+
 
 def color_slot(stage: str, wl: str) -> int:
     """Categorical colour slot (1..8) of a workload = its position in the stage's
@@ -299,13 +318,28 @@ def units_text(rows: list[dict]) -> str:
     return "/".join(units)
 
 
-def marker(cx: float, cy: float, bin_code: str, tip: str) -> str:
-    """A fail marker. Only the two bins in DOT_BINS get their own colour; every
-    other fail is the neutral dot. The run source is not encoded (the tooltip
-    carries it)."""
-    cls = f"dot {bin_code}" if bin_code in DOT_BINS else "dot"
-    return (f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{DOT_R}" class="{cls}">'
-            f"<title>{esc(tip)}</title></circle>")
+def shape(cx: float, cy: float, r: float, kind: str, inner: str = "") -> str:
+    """The marker of one fail kind at (cx, cy): golden = diamond, invcmd = triangle,
+    everything else = circle. Sized so the three read as one visual weight."""
+    cls = f"dot {kind}" if kind else "dot"
+    if kind == "golden":
+        a = r * 1.25
+        pts = (f"{cx:.1f},{cy - a:.1f} {cx + a:.1f},{cy:.1f} "
+               f"{cx:.1f},{cy + a:.1f} {cx - a:.1f},{cy:.1f}")
+        return f'<polygon points="{pts}" class="{cls}">{inner}</polygon>'
+    if kind == "invcmd":
+        a = r * 1.45
+        pts = (f"{cx:.1f},{cy - a:.1f} {cx + a * 0.866:.1f},{cy + a * 0.5:.1f} "
+               f"{cx - a * 0.866:.1f},{cy + a * 0.5:.1f}")
+        return f'<polygon points="{pts}" class="{cls}">{inner}</polygon>'
+    return f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r}" class="{cls}">{inner}</circle>'
+
+
+def marker(cx: float, cy: float, kind: str, tip: str) -> str:
+    """A fail marker. Only the kinds in DOT_LABELS get their own colour (and, for
+    golden / invcmd, their own shape); every other fail is the neutral dot. The run
+    source is not encoded (the tooltip carries it)."""
+    return shape(cx, cy, DOT_R, kind, f"<title>{esc(tip)}</title>")
 
 
 def render_svg(groups: list[tuple[str, list[tuple[str, list[dict]]]]], axis_title: str) -> str:
@@ -383,7 +417,7 @@ def _row(wl: str, rows: list[dict], ty: float, slot: int) -> list[str]:
         det = f' ({d})' if (d := (r.get("fail_detail") or "").strip()) else ""
         tip = (f'{wl}{ran}: {round(r["_pct"])}% ({r["_pos"]}/{r["_span"]}s) · '
                f'{where}{reason} {binc}{det} · {(r.get("serial_number") or "").strip()} · {r["_src"]}')
-        parts.append(marker(cx, cy, binc, tip))
+        parts.append(marker(cx, cy, dot_kind(r), tip))
 
     return parts
 
@@ -460,10 +494,9 @@ def _swatch(inner: str) -> str:
 
 
 def render_legend() -> str:
-    items = [
-        (_swatch('<circle cx="8" cy="8" r="5" class="dot f31"/>'), f'f31 {DOT_BINS["f31"]}'),
-        (_swatch('<circle cx="8" cy="8" r="5" class="dot f22"/>'), f'f22 {DOT_BINS["f22"]}'),
-        (_swatch('<circle cx="8" cy="8" r="5" class="dot"/>'), "그 외 fail"),
+    items = [(_swatch(shape(8, 8, 5, kind)), label) for kind, label in DOT_LABELS.items()]
+    items += [
+        (_swatch(shape(8, 8, 5, "")), "그 외 fail"),
         (_swatch('<line x1="8" y1="1" x2="8" y2="15" class="itick"/>'), "iteration 경계"),
     ]
     marks = "".join(f"<span>{sw}{esc(label)}</span>" for sw, label in items)
@@ -496,13 +529,13 @@ def render_html(site: str, rows: list[dict]) -> str:
    --oth:#52514e;--dot:#52514e;
    --t1:#2874d0;--t2:#c05429;--t3:#12855c;--t4:#9e6a00;
    --t5:#b23f7a;--t6:#008300;--t7:#4a3aa7;--t8:#d04241;--t9:#76756f;
-   --bin31:#e34948;--bin22:#0093b2;}}
+   --bin31:#e34948;--bin22:#0093b2;--golden:#4a3aa7;--invcmd:#008300;}}
  @media(prefers-color-scheme:dark){{:root{{color-scheme:dark;--page:#0d0d0d;--surface:#1a1a19;--text:#fff;
    --secondary:#c3c2b7;--muted:#898781;--grid:#2c2c2a;--border:#4a4a47;--head:#232321;
    --oth:#8b8a85;--dot:#b4b3ad;
    --t1:#3987e5;--t2:#d95b2b;--t3:#199e70;--t4:#c98500;
    --t5:#d55583;--t6:#4b914b;--t7:#9085e9;--t8:#e66767;--t9:#898781;
-   --bin31:#e66767;--bin22:#0e9ab8;}}}}
+   --bin31:#e66767;--bin22:#0e9ab8;--golden:#9085e9;--invcmd:#008300;}}}}
  *{{box-sizing:border-box}} body{{margin:0;padding:32px 24px 48px;background:var(--page);
    color:var(--text);font-family:system-ui,-apple-system,"Segoe UI","Malgun Gothic",sans-serif;font-size:14px;line-height:1.5}}
  .wrap{{max-width:1240px;margin:0 auto}} h1{{font-size:20px;margin:0 0 4px}}
@@ -514,10 +547,10 @@ def render_html(site: str, rows: list[dict]) -> str:
  ul.note li{{margin:1px 0}}
  .card{{background:var(--surface);border:1px solid var(--grid);border-radius:12px;padding:16px 18px 6px;margin-bottom:16px}}
  .legend{{display:flex;gap:10px 26px;font-size:24px;color:var(--secondary);margin:0 0 18px 20px;flex-wrap:wrap}}
- .lgroup{{display:inline-flex;align-items:center;gap:20px;border:1px solid var(--grid);
+ .lgroup{{display:inline-flex;align-items:center;flex-wrap:wrap;gap:8px 20px;border:1px solid var(--grid);
    border-radius:10px;padding:6px 16px;background:var(--surface)}}
  .lgroup b{{color:var(--muted);font-weight:600;font-size:22px;text-transform:uppercase;letter-spacing:.04em}}
- .legend span{{display:inline-flex;align-items:center;gap:10px;font-variant-numeric:tabular-nums}}
+ .legend span{{display:inline-flex;align-items:center;gap:10px;white-space:nowrap;font-variant-numeric:tabular-nums}}
  .mk{{overflow:visible;flex:none}}
  .grid{{stroke:var(--grid);stroke-width:1}} .track{{stroke:var(--border);stroke-width:1}}
  .itick{{stroke:var(--muted);stroke-width:1;stroke-dasharray:2 3;stroke-opacity:.55;fill:none}}
@@ -532,9 +565,15 @@ def render_html(site: str, rows: list[dict]) -> str:
  .t5{{fill:var(--t5);color:var(--t5)}} .t6{{fill:var(--t6);color:var(--t6)}}
  .t7{{fill:var(--t7);color:var(--t7)}} .t8{{fill:var(--t8);color:var(--t8)}}
  .t9{{fill:var(--t9);color:var(--t9)}}
- /* dots: neutral by default; f31 / f22 get their own hue (legend names both) */
+ /* marks: a neutral dot by default; f31 / f22 carry a hue, golden / invcmd a hue AND
+    a shape (diamond / triangle). The four mark colours + the neutral were validated
+    all-pairs against both surfaces: the worst pairs are invcmd<->f31 (dE 7.2 protan,
+    light) and golden<->f22 (dE 7.0 deutan, dark), both inside the 6-8 CVD band that
+    is legal only with secondary encoding — the shape IS that encoding, so neither
+    kind is ever identified by hue alone (and the legend names all four). */
  .dot{{fill:var(--dot);fill-opacity:.7;stroke:var(--surface);stroke-width:1}}
  .dot.f31{{fill:var(--bin31);fill-opacity:.9}} .dot.f22{{fill:var(--bin22);fill-opacity:.95}}
+ .dot.golden{{fill:var(--golden);fill-opacity:.9}} .dot.invcmd{{fill:var(--invcmd);fill-opacity:.9}}
  .scroll{{overflow-x:auto;border:1px solid var(--grid);border-radius:10px}}
  table{{border-collapse:collapse;width:100%;background:var(--surface);font-variant-numeric:tabular-nums}}
  th{{background:var(--head);text-align:right;font-size:12px;font-weight:600;color:var(--secondary);padding:9px 12px;white-space:nowrap;border-bottom:1px solid var(--border)}}

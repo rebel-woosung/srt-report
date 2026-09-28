@@ -117,8 +117,7 @@ def week_sort_key(devices: list[tuple[str, list[dict]]]) -> int:
     """Numeric manufacturing week of a group (from any serial), for recency sort;
     -1 when unknown so odd groups sink to the bottom."""
     serial = devices[0][0] if devices else ""
-    w = common.week_of(serial)
-    return int(w) if w.isdigit() else -1
+    return common.build_order(serial)
 
 
 def order_events(events: list[dict]) -> list[dict]:

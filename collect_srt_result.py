@@ -136,13 +136,13 @@ def device_stats(src: Path, fail_csv: Path) -> list[dict]:
             # than silently guess (add it to a common exception table or fix data).
             raise Exception(
                 f"cannot classify device {sid} (bin={win_bin!r}, "
-                f"build={common.week_label(common.week_of(sid))}): no module_grade, "
+                f"build={common.build_label(sid)}): no module_grade, "
                 f"absent from fail.csv, and not a listed spurious fail"
             )
 
         devices.append({
             "serial": sid,
-            "build": common.week_label(common.week_of(sid)),
+            "build": common.build_label(sid),
             "result": result,
             "grade": grade,
             "pass_bin": win_bin if passes else "",  # real pass bin (2RB4/2NB4); "" if no graded pass
@@ -171,7 +171,7 @@ def summarize(devices: list[dict]) -> dict[str, dict]:
             **{g: 0 for g in GRADES}, "first_fail": 0, "retest": 0, "second_fail": 0,
             "fw_versions": set(), "srt_versions": set(),
         })
-        b["week_num"] = common.week_of(d["serial"])  # for most-recent-first ordering
+        b["week_num"] = common.build_order(d["serial"])  # for most-recent-first ordering
         b["input"] += 1
         b["pass" if d["result"] == "Pass" else "fail"] += 1
         if d["grade"] in GRADES:
