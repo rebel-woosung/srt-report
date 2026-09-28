@@ -43,6 +43,7 @@ REMAP_FAIL_BY_SERIAL = {
 
 # --- manufacturing week -> display label ------------------------------------
 WEEK_LABELS = {
+    "18": "DVT3/4",
     "28": "DVT8",
     "29": "PVT1",
     "30": "PVT2",
@@ -64,6 +65,7 @@ WEEK_LABELS = {
 # weeks that hold more than one build, split by serial range (inclusive):
 # {week: [(first serial, last serial, label), ...]} in build order
 WEEK_SERIAL_SPLITS = {
+    "18": [(52618001, 52618007, "DVT3"), (52618008, 52618045, "DVT4")],
     "37": [(52637001, 52637082, "DVT14"), (52637083, 52637162, "DVT15")],
 }
 

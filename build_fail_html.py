@@ -4,7 +4,8 @@ Render a site's fail.csv as a grouped HTML fail-case table (<data>/viewer/fail.h
 
 Rows are grouped by device: same serial_number is merged into one block (a
 device that failed more than once shows every event under one serial cell).
-Weeks are the outer group, one tab per week, most-recent week first. Columns:
+Weeks (builds) are the outer group, picked from a left sidebar grouped by family
+(PVT / DVT / Week), most-recent build first. Columns:
 
     serial_number | result | pass bin | bin (reason) | stage | workload
     | elapsed_s | card_temp | hbm_temp | inlet_temp
@@ -73,6 +74,51 @@ NUM_KEYS = {"elapsed_s", "card_temp", "hbm_temp", "inlet_temp"}  # right-aligned
 # 펼치기 is on (CSS hides/shows the ``xcol`` cells; see col_class and the .xcol rules).
 EXPAND_ONLY_KEYS = {"elapsed_s", "card_temp", "hbm_temp"}
 ENHANCED_STAGE = "enhanced_stress"  # the graded-away stress fail; hidden when a subsequent fail exists
+
+# Build sidebar + collapse/expand toggle, shared by fail.html and result.html (plain
+# string). CSS-only: hidden radios pick the build, a hidden checkbox expands. On a wide
+# viewport the sidebar hangs in the left gutter so the table keeps the full 1240px measure.
+FAIL_LAYOUT_CSS = """
+  .failwrap > input[type="radio"],
+  .failwrap > input[type="checkbox"] { position: absolute; opacity: 0; width: 0; height: 0; }
+  .fail-layout { display: flex; gap: 20px; align-items: flex-start; }
+  @media (min-width: 1540px) { .fail-layout { margin-left: -124px; } }
+  .sidebar { flex: none; width: 104px; position: sticky; top: var(--sidebar-top, 16px);
+    max-height: calc(100vh - var(--sidebar-top, 16px) - 16px); overflow-y: auto; }
+  .sgroup + .sgroup { margin-top: 14px; }
+  .sgroup-title { font-size: 11px; font-weight: 700; letter-spacing: .06em; color: var(--muted);
+    padding: 0 10px 4px; }
+  .sidebar label { display: block; padding: 5px 10px; cursor: pointer; font-size: 13px;
+    font-weight: 600; color: var(--secondary); white-space: nowrap;
+    font-variant-numeric: tabular-nums; border-left: 2px solid transparent;
+    border-radius: 0 6px 6px 0; }
+  .sidebar label:hover { color: var(--text); }
+  .fail-main { flex: 1; min-width: 0; position: relative; }
+  .panel { display: none; }
+  .panel-head { font-size: 16px; font-weight: 700; line-height: 30px; margin: 0 0 10px; }
+  .expand-btn { position: absolute; top: 0; right: 0; cursor: pointer; user-select: none;
+    white-space: nowrap; font-size: 12px; font-weight: 600; color: var(--secondary);
+    padding: 5px 12px; border: 1px solid var(--grid); border-radius: 8px; }
+  .expand-btn:hover { color: var(--text); }
+  .expand-btn::after { content: "펼치기  +"; }
+  #expand:checked ~ .fail-layout .expand-btn::after { content: "접기  \\2212"; }
+  #expand:checked ~ .fail-layout .expand-btn { color: var(--text); background: var(--head-bg); }
+  .failwrap tr.eview { display: none; }
+  #expand:checked ~ .fail-layout tr.cview { display: none; }
+  #expand:checked ~ .fail-layout tr.eview { display: table-row; }
+  .failwrap th.xcol, .failwrap td.xcol { display: none; }
+  #expand:checked ~ .fail-layout th.xcol,
+  #expand:checked ~ .fail-layout td.xcol { display: table-cell; }
+  @media (max-width: 720px) {
+    .fail-layout { flex-direction: column; gap: 12px; }
+    .sidebar { position: static; width: 100%; max-height: none; display: flex; gap: 12px;
+      overflow-x: auto; }
+    .sgroup { display: flex; align-items: center; }
+    .sgroup + .sgroup { margin-top: 0; }
+    .sgroup-title { padding: 0 4px 0 0; }
+    .sidebar label { border-left: 0; border-radius: 6px; }
+  }
+"""
 
 
 def cell(value: str) -> str:
@@ -260,12 +306,21 @@ def render_week_rows(devices, stats: dict[str, dict]) -> str:
     return "\n".join(o for o in out if o)
 
 
+def build_family(week: str) -> str:
+    """Sidebar group of a build label: ``MP`` / ``PVT`` / ``DVT`` by prefix, else ``Week``."""
+    for prefix in ("MP", "PVT", "DVT"):
+        if week.upper().startswith(prefix):
+            return prefix
+    return "Week"
+
+
 def render_fail_tabs(rows: list[dict], stats: dict[str, dict]) -> tuple[str, str]:
-    """(markup, dynamic_css) for the week-tabbed fail table with the collapse/expand
-    toggle. Weeks are ordered most-recent first (they accumulate over time). The
-    dynamic_css holds the per-week ``:checked`` selectors (data-dependent) and must
-    be placed in the page ``<style>``. Self-contained: IDs ``wk*``/``expand`` and the
-    ``.tabwrap`` structure the selectors rely on all live inside the returned markup."""
+    """(markup, dynamic_css) for the fail table with a left build sidebar and the
+    collapse/expand toggle. Builds are ordered most-recent first and grouped by
+    family (PVT / DVT / Week) in the sidebar. The dynamic_css holds the per-build
+    ``:checked`` selectors (data-dependent) and must be placed in the page
+    ``<style>``. Self-contained: IDs ``wk*``/``expand`` and the ``.failwrap``
+    structure the selectors rely on all live inside the returned markup."""
     grouped = sorted(group_rows(rows), key=lambda x: week_sort_key(x[1]), reverse=True)
 
     # the device columns carry col_class too, so the expand-only ones (xcol) hide and
@@ -278,38 +333,42 @@ def render_fail_tabs(rows: list[dict], stats: dict[str, dict]) -> tuple[str, str
         for key, label in EVENT_COLUMNS
     )
 
-    # one radio + label + panel per week; a single checkbox drives collapse/expand.
-    radios, labels, panels, show_sel, active_sel = [], [], [], [], []
+    # one radio + sidebar label + panel per build; a single checkbox drives collapse/expand.
+    radios, panels, show_sel, active_sel = [], [], [], []
+    families: dict[str, list[str]] = {}
     for i, (wk, devices) in enumerate(grouped):
-        n_dev = len(devices)
-        n_ev = sum(len(evs) for _, evs in devices)  # total fail events (expanded view)
         radios.append(f'<input type="radio" name="wk" id="wk{i}"{" checked" if i == 0 else ""}>')
-        labels.append(
-            f'<label for="wk{i}">{html.escape(wk)} '
-            f'<span class="cnt">{n_dev} dev · {n_ev} ev</span></label>'
+        families.setdefault(build_family(wk), []).append(
+            f'<label for="wk{i}">{html.escape(wk)}</label>'
         )
         panels.append(
-            f'<div class="panel" id="p{i}"><div class="scroll"><table>'
+            f'<div class="panel" id="p{i}"><div class="panel-head">{html.escape(wk)}</div>'
+            f'<div class="scroll"><table>'
             f'<thead><tr>{head_html}</tr></thead><tbody>\n{render_week_rows(devices, stats)}\n'
             f"</tbody></table></div></div>"
         )
-        show_sel.append(f"#wk{i}:checked ~ .panels > #p{i}")
-        active_sel.append(f'#wk{i}:checked ~ .topbar label[for="wk{i}"]')
+        show_sel.append(f"#wk{i}:checked ~ .fail-layout #p{i}")
+        active_sel.append(f'#wk{i}:checked ~ .fail-layout label[for="wk{i}"]')
+    sidebar = "".join(
+        f'<div class="sgroup"><div class="sgroup-title">{html.escape(fam)}</div>{"".join(labels)}</div>'
+        for fam, labels in families.items()
+    )
     tabs_html = (
         "".join(radios)
         + '<input type="checkbox" id="expand">'
-        + '<div class="topbar">'
-        + f'<div class="tabbar">{"".join(labels)}</div>'
+        + '<div class="fail-layout">'
+        + f'<nav class="sidebar">{sidebar}</nav>'
+        + '<div class="fail-main">'
         + '<label for="expand" class="expand-btn"></label>'
-        + "</div>"
         + f'<div class="panels">{"".join(panels)}</div>'
+        + "</div></div>"
     )
     show_css = ",\n  ".join(show_sel) + " { display: block; }" if show_sel else ""
     active_css = (",\n  ".join(active_sel)
-                  + " { color: var(--text); background: var(--surface);"
-                    " border-color: var(--grid); border-bottom-color: var(--surface); }") if active_sel else ""
+                  + " { color: var(--text); background: var(--head-bg);"
+                    " border-left-color: var(--text); }") if active_sel else ""
     dynamic_css = "\n  ".join(c for c in (show_css, active_css) if c)
-    markup = f'<div class="tabwrap">\n{tabs_html}\n    </div>'
+    markup = f'<div class="failwrap">\n{tabs_html}\n    </div>'
     return markup, dynamic_css
 
 
@@ -370,34 +429,8 @@ def render_html(rows: list[dict], stats: dict[str, dict]) -> str:
   h1 {{ font-size: 20px; margin: 0 0 4px; }}
   .summary {{ color: var(--secondary); margin: 0 0 20px; font-size: 13px; }}
   .summary b {{ color: var(--text); font-variant-numeric: tabular-nums; }}
-  /* week tabs + expand toggle (CSS-only: hidden radios/checkbox drive the view) */
-  .tabwrap > input[type="radio"],
-  .tabwrap > input[type="checkbox"] {{ position: absolute; opacity: 0; width: 0; height: 0; }}
-  .topbar {{ display: flex; justify-content: space-between; align-items: flex-end; gap: 12px;
-    flex-wrap: wrap; margin-bottom: 16px; border-bottom: 1px solid var(--grid); }}
-  .tabbar {{ display: flex; flex-wrap: wrap; gap: 4px; }}
-  .tabbar label {{ padding: 8px 16px; cursor: pointer; font-size: 13px; font-weight: 600;
-    color: var(--secondary); border: 1px solid transparent; border-bottom: none;
-    border-radius: 8px 8px 0 0; margin-bottom: -1px; }}
-  .tabbar label:hover {{ color: var(--text); }}
-  .tabbar .cnt {{ color: var(--muted); font-weight: 400; font-size: 11px; }}
-  .expand-btn {{ flex: none; cursor: pointer; user-select: none; white-space: nowrap;
-    font-size: 12px; font-weight: 600; color: var(--secondary); padding: 5px 12px;
-    border: 1px solid var(--grid); border-radius: 8px; margin-bottom: 6px; }}
-  .expand-btn:hover {{ color: var(--text); }}
-  .expand-btn::after {{ content: "펼치기  +"; }}
-  #expand:checked ~ .topbar .expand-btn::after {{ content: "접기  \\2212"; }}
-  #expand:checked ~ .topbar .expand-btn {{ color: var(--text); background: var(--head-bg); }}
-  .panel {{ display: none; }}
+  {FAIL_LAYOUT_CSS}
   {dynamic_css}
-  /* collapse (default): show cview, hide eview. expanded (#expand:checked): swap. */
-  tr.eview {{ display: none; }}
-  #expand:checked ~ .panels tr.cview {{ display: none; }}
-  #expand:checked ~ .panels tr.eview {{ display: table-row; }}
-  /* expand-only columns (elapsed_s / card_temp / hbm_temp): header + cells hidden while collapsed */
-  th.xcol, td.xcol {{ display: none; }}
-  #expand:checked ~ .panels th.xcol,
-  #expand:checked ~ .panels td.xcol {{ display: table-cell; }}
   .scroll {{ overflow-x: auto; border: 1px solid var(--grid); border-radius: 10px; }}
   table {{
     border-collapse: collapse;
@@ -463,7 +496,7 @@ def render_html(rows: list[dict], stats: dict[str, dict]) -> str:
     <p class="summary">
       <b>{n_events}</b> fail events &middot;
       <b>{n_devices}</b> devices &middot;
-      <b>{n_weeks}</b> weeks &middot; grouped by serial number &middot; one tab per week
+      <b>{n_weeks}</b> builds &middot; grouped by serial number
     </p>
     {tabs_html}
   </div>

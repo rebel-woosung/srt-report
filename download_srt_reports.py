@@ -219,7 +219,7 @@ def print_table(reports: list[dict], since: date | None = None) -> None:
     print(f"\nTotal: {len(reports)} reports{suffix}")
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="List/download SRT reports from the reports API.")
     parser.add_argument(
         "--site",
@@ -239,7 +239,7 @@ def main() -> int:
         help=f"Do not exclude interrupted (bin {common.INTERRUPTED_BIN}) reports.",
     )
     parser.add_argument("--json", action="store_true", help="Output raw JSON instead of a table")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     reports_dir, _ = common.site_paths(args.site)
     url = args.url or common.site_url(args.site)

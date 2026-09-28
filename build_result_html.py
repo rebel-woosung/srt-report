@@ -5,12 +5,12 @@ Single combined SRT report -> <data>/viewer/result.html.
 Merges what used to be two pages into one:
   * Result Summary — per-build (per-week) roster/grade/fail counts
     (collect_srt_result.render_summary_table), newest week on top.
-  * Fail Cases     — per-device fail events, week tabs + collapse/expand toggle
-    (build_fail_html.render_fail_tabs), newest week first.
+  * Fail Cases     — per-device fail events, left build sidebar + collapse/expand
+    toggle (build_fail_html.render_fail_tabs), newest build first.
 
 Weeks accumulate over time, so both sections are ordered most-recent-first: the
-summary table grows downward with the newest build on top, and the fail-case week
-tabs put the newest week first (and select it by default). A sticky top nav jumps
+summary table grows downward with the newest build on top, and the fail-case build
+sidebar puts the newest build first (and selects it by default). A sticky top nav jumps
 between the two sections.
 
 Both sections read the SAME authority (collect_srt_result.device_stats over
@@ -109,14 +109,20 @@ CSS = """
   .summary-section td.pass { color: var(--pass); font-weight: 600; }
   .summary-section td.fail { color: var(--fail); font-weight: 600; }
   .summary-section tr.total > td { border-top: 2px solid var(--group-border); font-weight: 700; }
+  .summary-section tbody tr.sdetail { display: none; }
+  .summary-section tbody tr.sdetail.open { display: table-row; }
+  .summary-section tr.sdetail > td { padding: 4px 12px 12px 40px; background: var(--head-bg);
+    border-top: 0; font-weight: 400; }
+  .summary-section .dtable thead th { text-align: left; padding: 5px 10px; }
+  .summary-section .dtable td { padding: 5px 10px; font-size: 13px; }
+  .summary-section .dtable .sub { color: var(--muted); font-size: 11px; }
 
-  /* --- Fail Cases table + week tabs + collapse toggle --- */
+  /* --- Fail Cases table (build sidebar + collapse toggle: bfh.FAIL_LAYOUT_CSS) --- */
+  .fail-section { --sidebar-top: 64px; }
   .fail-section thead th { text-align: left; }
   .fail-section thead th:nth-child(3) { text-align: center; }
   .fail-section td.tests { width: 1%; text-align: center; vertical-align: middle;
     white-space: nowrap; color: var(--secondary); font-variant-numeric: tabular-nums; }
-  .tabwrap > input[type="radio"],
-  .tabwrap > input[type="checkbox"] { position: absolute; opacity: 0; width: 0; height: 0; }
   .topbar { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px;
     flex-wrap: wrap; margin-bottom: 16px; border-bottom: 1px solid var(--grid); }
   .tabbar { display: flex; flex-wrap: wrap; gap: 4px; }
@@ -124,22 +130,6 @@ CSS = """
     color: var(--secondary); border: 1px solid transparent; border-bottom: none;
     border-radius: 8px 8px 0 0; margin-bottom: -1px; }
   .tabbar label:hover { color: var(--text); }
-  .tabbar .cnt { color: var(--muted); font-weight: 400; font-size: 11px; }
-  .expand-btn { flex: none; cursor: pointer; user-select: none; white-space: nowrap;
-    font-size: 12px; font-weight: 600; color: var(--secondary); padding: 5px 12px;
-    border: 1px solid var(--grid); border-radius: 8px; margin-bottom: 6px; }
-  .expand-btn:hover { color: var(--text); }
-  .expand-btn::after { content: "펼치기  +"; }
-  #expand:checked ~ .topbar .expand-btn::after { content: "접기  \\2212"; }
-  #expand:checked ~ .topbar .expand-btn { color: var(--text); background: var(--head-bg); }
-  .panel { display: none; }
-  tr.eview { display: none; }
-  #expand:checked ~ .panels tr.cview { display: none; }
-  #expand:checked ~ .panels tr.eview { display: table-row; }
-  /* expand-only columns (elapsed_s / card_temp / hbm_temp): header + cells hidden while collapsed */
-  .fail-section th.xcol, .fail-section td.xcol { display: none; }
-  #expand:checked ~ .panels th.xcol,
-  #expand:checked ~ .panels td.xcol { display: table-cell; }
   .fail-section td { vertical-align: top; }
   .fail-section tr.group-start > td { border-top: 2px solid var(--group-border); }
   .fail-section td.serial { font-weight: 600; vertical-align: middle; white-space: nowrap;
@@ -196,7 +186,7 @@ CSS = """
   .fail-toggle { font: inherit; color: inherit; background: none; cursor: pointer;
     border: 1px solid color-mix(in srgb, var(--fail) 40%, transparent); border-radius: 4px;
     padding: 0 6px; }
-  .fail-toggle:hover, tr.open .fail-toggle { background: color-mix(in srgb, var(--fail) 12%, transparent); }
+  .fail-toggle:hover, tr.open .fail-toggle, .fail-toggle.open { background: color-mix(in srgb, var(--fail) 12%, transparent); }
   .hist-section tbody tr.hdetail { display: none; }
   .hist-section tbody tr.hdetail.open { display: table-row; }
   .hist-section tr.hdetail > td { padding: 4px 12px 12px 40px; background: var(--head-bg); border-top: 0; }
@@ -234,19 +224,52 @@ SUMMARY_FILTER_JS = """
       var b = builds[d.build];
       if (!b) {
         b = builds[d.build] = { input: 0, pass: 0, fail: 0, first_fail: 0, retest: 0,
-          second_fail: 0, fw: new Set(), srt: new Set(), week_num: d.week_num };
+          second_fail: 0, fw: new Set(), srt: new Set(), week_num: d.week_num,
+          first_list: [], second_list: [] };
         GRADES.forEach(function (g) { b[g] = 0; });
       }
       b.input++;
       if (d.result === "Pass") b.pass++; else b.fail++;
       if (GRADES.indexOf(d.grade) >= 0) b[d.grade]++;
-      if (d.first_fail) b.first_fail++;
+      if (d.first_fail) { b.first_fail++; b.first_list.push(d); }
       if (d.retested) b.retest++;
-      if (d.second_fail) b.second_fail++;
+      if (d.second_fail) { b.second_fail++; b.second_list.push(d); }
       if (d.fw_version) b.fw.add(d.fw_version);
       if (d.srt_version) b.srt.add(d.srt_version);
     });
     return builds;
+  }
+  var DETAIL_HEAD = ["serial", "slot", "bin", "reason", "stage", "workload", "fail_at", "run"];
+  function toggleCell(n, kind, list) {
+    if (!n || !list || !list.length) return '<td class="num">' + n + '</td>';
+    return '<td class="num"><button type="button" class="fail-toggle" data-kind="' + kind +
+      '">' + n + '</button></td>';
+  }
+  function td(v) {
+    return '<td>' + (v ? esc(v) : '<span class="empty">&ndash;</span>') + '</td>';
+  }
+  function detailRow(kind, list, showBuild) {
+    if (!list || !list.length) return "";
+    var key = kind === "first" ? "fails1" : "fails2";
+    var head = (showBuild ? ["build"] : []).concat(DETAIL_HEAD);
+    var devs = list.slice().sort(function (a, b) {
+      return a.serial < b.serial ? -1 : a.serial > b.serial ? 1 : 0;
+    });
+    var lines = [];
+    devs.forEach(function (d) {
+      var evs = d[key] && d[key].length ? d[key] : [{}];
+      evs.forEach(function (ev) {
+        var reason = ev.reason ? esc(ev.reason) +
+          (ev.fail_detail ? ' <span class="sub">(' + esc(ev.fail_detail) + ')</span>' : "")
+          : '<span class="empty">&ndash;</span>';
+        lines.push('<tr>' + (showBuild ? td(d.build) : "") + td(d.serial) + td(ev.slot) +
+          '<td><b>' + esc(ev.bin || "") + '</b></td><td>' + reason + '</td>' +
+          td(ev.stage) + td(ev.workload) + td(ev.fail_at) + td(ev.run) + '</tr>');
+      });
+    });
+    return '<tr class="sdetail" data-kind="' + kind + '"><td colspan="10"><table class="dtable"><thead><tr>' +
+      head.map(function (h) { return '<th>' + esc(h) + '</th>'; }).join("") +
+      '</tr></thead><tbody>' + lines.join("") + '</tbody></table></td></tr>';
   }
   function rowCells(name, b, tag) {
     var grades = GRADES.map(function (g) { return b[g]; }).join("/");
@@ -259,10 +282,12 @@ SUMMARY_FILTER_JS = """
       '<td class="num pass">' + b.pass + '</td>' +
       '<td class="num fail">' + b.fail + '</td>' +
       '<td class="num">' + grades + '</td>' +
-      '<td class="num">' + b.first_fail + '</td>' +
+      toggleCell(b.first_fail, "first", b.first_list) +
       '<td class="num">' + b.retest + '</td>' +
-      '<td class="num">' + b.second_fail + '</td>' +
-      ver + '</tr>';
+      toggleCell(b.second_fail, "second", b.second_list) +
+      ver + '</tr>' +
+      detailRow("first", b.first_list, tag === "total") +
+      detailRow("second", b.second_list, tag === "total");
   }
   function render(devs) {
     var builds = aggregate(devs);
@@ -275,6 +300,9 @@ SUMMARY_FILTER_JS = """
       var total = {};
       numKeys.forEach(function (k) {
         total[k] = names.reduce(function (s, n) { return s + builds[n][k]; }, 0);
+      });
+      ["first_list", "second_list"].forEach(function (k) {
+        total[k] = names.reduce(function (s, n) { return s.concat(builds[n][k]); }, []);
       });
       rows.push(rowCells("Total", total, "total"));
     }
@@ -301,6 +329,20 @@ SUMMARY_FILTER_JS = """
   }
   document.getElementById("end-date").addEventListener("change", apply);
   document.getElementById("end-time").addEventListener("change", apply);
+  document.getElementById("summary-body").addEventListener("click", function (e) {
+    var btn = e.target.closest(".fail-toggle");
+    if (!btn) return;
+    var row = btn.closest("tr").nextElementSibling;
+    while (row && row.classList.contains("sdetail")) {
+      if (row.dataset.kind === btn.dataset.kind) {
+        row.classList.toggle("open");
+        btn.classList.toggle("open");
+        return;
+      }
+      row = row.nextElementSibling;
+    }
+  });
+  apply();
 })();
 """
 
@@ -335,16 +377,29 @@ def render_html(devices: list[dict], builds: dict[str, dict], rows: list[dict],
     )
     fail_counts = (
         f'<b>{len(rows)}</b> fail events &middot; <b>{len(fail_serials)}</b> devices &middot; '
-        f'<b>{len(fail_weeks)}</b> weeks &middot; grouped by serial number &middot; one tab per week'
+        f'<b>{len(fail_weeks)}</b> builds &middot; grouped by serial number'
     )
     history_counts = bhh.counts_line(history)
+
+    fail_events: dict[tuple[str, str], list[dict]] = {}
+    for r in rows:
+        m = bhh.RUN_NAME_RE.search(r.get("run", ""))
+        fail_events.setdefault((r.get("serial_number", ""), r.get("round") or "1st"), []).append({
+            "slot": r.get("slot", ""), "bin": r.get("bin", ""), "reason": r.get("reason", ""),
+            "fail_detail": r.get("fail_detail", ""), "stage": bfh.stage_label(r),
+            "workload": r.get("filename", ""), "fail_at": bhh.fmt_ts(r.get("fail_at", "")),
+            "run": m.group("host") if m else r.get("run", ""),
+        })
 
     # per-device rows for the client-side date filter (see SUMMARY_FILTER_JS)
     devices_json = json.dumps([
         {"build": d["build"], "week_num": common.build_order(d["serial"]), "result": d["result"],
          "grade": d.get("grade", ""), "first_fail": d["first_fail"], "retested": d["retested"],
          "second_fail": d["second_fail"], "fw_version": d.get("fw_version", ""),
-         "srt_version": d.get("srt_version", ""), "end_time": d.get("end_time", "")}
+         "srt_version": d.get("srt_version", ""), "end_time": d.get("end_time", ""),
+         "serial": d["serial"],
+         "fails1": fail_events.get((d["serial"], "1st"), []) if d["first_fail"] else [],
+         "fails2": fail_events.get((d["serial"], "2nd"), []) if d["second_fail"] else []}
         for d in devices
     ], ensure_ascii=False)
 
@@ -397,7 +452,7 @@ def render_html(devices: list[dict], builds: dict[str, dict], rows: list[dict],
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         "<title>SRT Result</title>\n"
-        "<style>" + CSS + "\n  " + dynamic_css + "\n</style>\n</head>\n<body>\n"
+        "<style>" + CSS + bfh.FAIL_LAYOUT_CSS + "\n  " + dynamic_css + "\n</style>\n</head>\n<body>\n"
         + body + "\n" + script + "\n</body>\n</html>\n"
     )
 
