@@ -116,6 +116,10 @@ FAIL_LINE_RE = re.compile(
     r"\(slot\s+(?P<slot>[^,]+),\s+sid\s+(?P<sid>[^,]*),\s+bus\s+(?P<bus>[^)]+)\)\s+"
     r"step=(?P<step>\S+)\s+reason=(?P<reason>\w+)\((?P<code>[^)]+)\)"
 )
+RETRACE_FAIL_RE = re.compile(
+    r"Device\s+(?P<dev>[^\s(]+)\s+\(slot\s+(?P<slot>[^,]+),[^)]*\):\s+"
+    r"retrace (?:command failed|timed out|unexpected error)"
+)
 TS_RE = re.compile(r"^(?P<ts>\d{4}-\d{2}-\d{2}T[0-9:+\-]+):")
 RUNNING_RE = re.compile(r"\[(?P<stage>[^\]/]+)(?:/(?P<sub>[^\]]+))?\]\s+status=running")
 UNIT_RE = re.compile(r"\*\* TEST UNIT #(?P<num>\d+)\s+\((?P<code>[^)]+)\)")
@@ -307,6 +311,7 @@ def parse_server_log(log_path: Path, run: str) -> tuple[list[dict], int]:
     iter_no = 1        # current N of "Iteration N/M" (only meaningful in iteration stage)
     iter_total = ""    # total M of "Iteration N/M"
     wl_missing = False  # this test unit's workload .bin could not be opened
+    retrace_failed_at: dict[tuple[str, str], str] = {}
 
     with open(log_path, encoding="utf-8", errors="replace") as fh:
         for line in fh:
@@ -334,6 +339,7 @@ def parse_server_log(log_path: Path, run: str) -> tuple[list[dict], int]:
                     dcl = hbm = dnc = ""
                     files = []
                     wl_missing = False
+                    retrace_failed_at.clear()
                 in_filename = False
                 continue
             if "HardwareConfig(" in line:
@@ -352,12 +358,21 @@ def parse_server_log(log_path: Path, run: str) -> tuple[list[dict], int]:
                 else:
                     in_filename = False  # block border / next key ends the list
                 continue
+            if "retrace " in line:
+                m = RETRACE_FAIL_RE.search(line)
+                ts = TS_RE.match(line)
+                if m and ts:
+                    retrace_failed_at.setdefault((m.group("dev"), m.group("slot")), ts.group("ts"))
+                    continue
             if "[fail_binning]:" in line:
                 m = FAIL_LINE_RE.search(line)
                 if not m:
                     unparsed += 1
                     continue
                 ts = TS_RE.match(line)
+                fail_at = ts.group("ts") if ts else "-"
+                if m.group("step").startswith("RetraceWorkloadAction"):
+                    fail_at = retrace_failed_at.get((m.group("dev"), m.group("slot")), fail_at)
                 sid = m.group("sid").strip()
                 if not sid:  # fail before serial read -> recover via bus from device_info.json
                     if bus_serial_map is None:
@@ -371,7 +386,7 @@ def parse_server_log(log_path: Path, run: str) -> tuple[list[dict], int]:
                 events.append(
                     {
                         "run": run,
-                        "fail_at": ts.group("ts") if ts else "-",
+                        "fail_at": fail_at,
                         "workload_start_at": unit_ts if attach else "",
                         "dev": m.group("dev"),
                         "slot": m.group("slot"),
