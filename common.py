@@ -17,6 +17,7 @@ build_fail_data.parse_server_log (keys: run, sid, week, reason, code, ...).
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 # --- per-card fail exceptions (keyed by card serial) ------------------------
@@ -61,6 +62,12 @@ WEEK_LABELS = {
     "42": "MP2",
     "43": "MP3",
     "44": "MP4",
+    "45": "MP5",
+    "46": "MP6",
+    "47": "MP7",
+    "48": "MP8",
+    "49": "MP9",
+    "50": "MP10",
 }  # unlisted weeks keep their raw value
 # weeks that hold more than one build, split by serial range (inclusive):
 # {week: [(first serial, last serial, label), ...]} in build order
@@ -94,6 +101,9 @@ REJECT_DISABLED_STAGES = 2
 #   RBLN-CR13_SRT_20260824T095728_rbln-suma-srt-02: only slots 1/2 were present and
 #   both failed NVM prod-info read (f111) 68 s in, so serial / chip IDs never read —
 #   the run never reached a workload, a setup failure, not real device fails.
+#   RBLN-CR13_SRT_20261110T094705_rebel-05: 상대원 setup check before the 22 h run;
+#   rbcn could not read the workload files (open rc -13), so all 8 devices failed
+#   the first workload (f151) — a setup failure, not real device fails.
 EXCLUDED_REPORTS = {
     "RBLN-CR13_SRT_20260722T153511_rbln-suma-srt-02",
     "RBLN-CR13_SRT_20260722T130956_rbln-suma-srt-05",
@@ -102,6 +112,7 @@ EXCLUDED_REPORTS = {
     "RBLN-CR13_SRT_20260824T095728_rbln-suma-srt-02",
     "RBLN-CR13_SRT_20260824T160142_rbln-suma-srt-02",
     "RBLN-CR13_SRT_20260924T095531_rbln-suma-srt-03",
+    "RBLN-CR13_SRT_20261110T094705_rebel-05",
 }
 
 
@@ -144,7 +155,7 @@ def is_interrupted(report_dir: Path) -> bool:
     return False
 
 
-def exclusion_reason(report_dir: Path) -> str | None:
+def exclusion_reason(report_dir: Path, site: str) -> str | None:
     """Why a run is not analysable (-> the ``_excluded`` bucket), or None if it is
     fine. The precedence is the one the downloader classifies by, and the string is
     the note it prints: a reviewed manual exclusion wins over every automatic rule,
@@ -153,7 +164,7 @@ def exclusion_reason(report_dir: Path) -> str | None:
         return "listed in common.EXCLUDED_REPORTS"
     if is_interrupted(report_dir):
         return f"interrupted, bin {INTERRUPTED_BIN}"
-    return report_reject_reason(report_dir)
+    return report_reject_reason(report_dir, site)
 
 
 def is_retest_run(report_dir: Path) -> bool:
@@ -180,8 +191,28 @@ def is_retest_run(report_dir: Path) -> bool:
             continue
     return False
 
+
+def unbinned_result(report_dir: Path, rec: dict) -> str:
+    """PASS/FAIL of a TEST_RESULT record whose run never binned (record_results stage off,
+    so result/bin are empty), as DecidePassBinAction would decide it from
+    lib/state/device_info.json: FAIL if the device is ``failed``, else PASS (an
+    enhanced-stress fail only lowers the grade). "" if the record has a result."""
+    if str(rec.get("result", "")).strip():
+        return ""
+    info = next(report_dir.rglob("lib/state/device_info.json"), None)
+    try:
+        devices = json.loads(info.read_text()) if info else {}
+    except (OSError, json.JSONDecodeError):
+        return ""
+    bus = str(rec.get("extra", {}).get("bus_id", "")).strip()
+    for dev in devices.values() if isinstance(devices, dict) else []:
+        if isinstance(dev, dict) and str(dev.get("bus_address", "")).strip() == bus:
+            return "FAIL" if dev.get("status") == "failed" else "PASS"
+    return ""
+
 # --- sites: each is an independent dataset (own API, reports dir, data dir) --
 DEFAULT_SITE = "pega"
+SANGDAEWON_SERVER_RE = re.compile(r"rebel-\d+")
 # "since": cutoff date (YYYY-MM-DD) for which reports to load; None = all.
 SITES = {
     "pega":   {"url": "http://192.168.101.100",
@@ -191,12 +222,34 @@ SITES = {
     "rtower": {"url": "http://192.168.7.151",
                "reports": "~/script/srt/reports/rtower",
                "data": "~/script/srt/data/rtower",
-               "since": None},
+               "since": None,
+               "skip_servers": SANGDAEWON_SERVER_RE},
+    "sangdaewon": {"url": "http://192.168.7.151",
+                   "reports": "~/script/srt/reports/sangdaewon",
+                   "data": "~/script/srt/data/sangdaewon",
+                   "since": None,
+                   "only_servers": SANGDAEWON_SERVER_RE,
+                   "workload_dir": "/home/rebellions/shw/Vector/26_11_10",
+                   "allow_empty_bin": True},
 }
 
 
 def site_url(site: str) -> str:
     return SITES[site]["url"]
+
+
+def site_has_server(site: str, server: str) -> bool:
+    """True if a report from ``server`` (hostname in the report name) belongs to the site."""
+    cfg = SITES[site]
+    if (only := cfg.get("only_servers")) and not only.fullmatch(server):
+        return False
+    if (skip := cfg.get("skip_servers")) and skip.fullmatch(server):
+        return False
+    return True
+
+
+def site_workload_dir(site: str) -> str:
+    return SITES[site].get("workload_dir", VALID_WORKLOAD_DIR)
 
 
 def site_paths(site: str) -> tuple[Path, Path]:
@@ -280,25 +333,33 @@ def filter_events(events: list[dict]) -> list[dict]:
     return kept
 
 
-def report_reject_reason(report_dir: Path) -> str | None:
-    """Why a report should be filtered OUT of the dataset, or None if it passes.
-    A report is rejected when:
-      * any device bin in TEST_RESULT_*.json is empty (incomplete binning);
-      * test_config.json is missing/unreadable (can't confirm the conditions);
-      * test_config.json has a workload_dir that is SET but != VALID_WORKLOAD_DIR.
-        (A missing/empty workload_dir is kept: older reports predate the field.)
-      * REJECT_DISABLED_STAGES or more of its stages have enable=false (a partial
-        run, not a full SRT).
-    A run in FORCE_INCLUDE_REPORTS bypasses all of these."""
-    if is_force_included_report(report_dir.name):
-        return None
+def has_empty_bin(report_dir: Path) -> bool:
     for js in report_dir.glob("TEST_RESULT_*.json"):
         try:
             recs = json.loads(js.read_text())
         except (OSError, json.JSONDecodeError):
             continue
         if any(str(r.get("extra", {}).get("bin", "")) == "" for r in recs):
-            return "empty bin in TEST_RESULT"
+            return True
+    return False
+
+
+def report_reject_reason(report_dir: Path, site: str) -> str | None:
+    """Why a report should be filtered OUT of the dataset, or None if it passes.
+    A report is rejected when:
+      * any device bin in TEST_RESULT_*.json is empty (incomplete binning), unless
+        the site sets allow_empty_bin (its runs never bin; see unbinned_result);
+      * test_config.json is missing/unreadable (can't confirm the conditions);
+      * test_config.json has a workload_dir that is SET but != site_workload_dir(site)
+        (VALID_WORKLOAD_DIR unless the site overrides it).
+        (A missing/empty workload_dir is kept: older reports predate the field.)
+      * REJECT_DISABLED_STAGES or more of its stages have enable=false (a partial
+        run, not a full SRT).
+    A run in FORCE_INCLUDE_REPORTS bypasses all of these."""
+    if is_force_included_report(report_dir.name):
+        return None
+    if not SITES[site].get("allow_empty_bin") and has_empty_bin(report_dir):
+        return "empty bin in TEST_RESULT"
 
     cfg_path = next(report_dir.rglob("test_config.json"), None)
     if cfg_path is None:
@@ -311,8 +372,9 @@ def report_reject_reason(report_dir: Path) -> str | None:
     workload_dir = str(cfg.get("workload_dir", "")).strip()
     # Older reports predate the workload_dir field (missing/empty) -> keep them;
     # only reject when it is set and points somewhere other than the valid dir.
-    if workload_dir and workload_dir != VALID_WORKLOAD_DIR:
-        return f"workload_dir != {VALID_WORKLOAD_DIR}"
+    valid_dir = site_workload_dir(site)
+    if workload_dir and workload_dir != valid_dir:
+        return f"workload_dir != {valid_dir}"
 
     stages = cfg.get("stages", {})
     disabled = [n for n, v in stages.items()

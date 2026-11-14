@@ -205,6 +205,11 @@ encoding 필수" 구간인데, 여기서는 **색이 얹혀 있는 그 이름 �
 |---|---|---|---|---|
 | `pega` (기본) | `http://192.168.101.100` | `reports/pega` | `data/pega` | 2026-07-09 |
 | `rtower` | `http://192.168.7.151` | `reports/rtower` | `data/rtower` | 전체 |
+| `sangdaewon` | `http://192.168.7.151` | `reports/sangdaewon` | `data/sangdaewon` | 전체 |
+
+`rtower`와 `sangdaewon`은 같은 API를 씁니다. 상대원 서버(hostname `rebel-NN`, `common.SANGDAEWON_SERVER_RE`)의
+리포트는 `sangdaewon`으로만 받고 `rtower`에서는 건너뜁니다. `sangdaewon`은 workload_dir 기준도
+`/home/rebellions/shw/Vector/26_11_10`(SITES의 `workload_dir`)으로 따로 봅니다.
 
 사이트를 추가하려면 `SITES`에 항목 하나만 넣으면 됩니다. 두 스크립트 모두 여기서 URL과 경로를 읽습니다.
 

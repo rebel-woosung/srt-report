@@ -103,7 +103,7 @@ def run_serials(report_dir: Path, recs: list[dict]) -> list[str]:
     return out
 
 
-def summarize_run(report_dir: Path, cp_fw: str, source: str,
+def summarize_run(report_dir: Path, cp_fw: str, source: str, site: str,
                   round_label: str | None = None) -> dict | None:
     """One history row for a run. ``source`` is the bucket it came from;
     ``round_label=None`` derives the binning round per run (common.is_retest_run),
@@ -128,7 +128,7 @@ def summarize_run(report_dir: Path, cp_fw: str, source: str,
     fails: list[str] = []
     for rec, sid in zip(recs, serials):
         ex = rec.get("extra", {})
-        if str(rec.get("result", "")).upper() == "PASS":
+        if (str(rec.get("result", "")).upper() or common.unbinned_result(report_dir, rec)) == "PASS":
             pass_total += 1
             grades[str(ex.get("module_grade", ""))] += 1
             continue
@@ -148,7 +148,7 @@ def summarize_run(report_dir: Path, cp_fw: str, source: str,
         "source": source,
         "round": round_label if round_label is not None
         else ("2nd" if common.is_retest_run(report_dir) else "1st"),
-        "exclude_reason": (common.exclusion_reason(report_dir) or "") if source == "excluded" else "",
+        "exclude_reason": (common.exclusion_reason(report_dir, site) or "") if source == "excluded" else "",
         "week": ";".join(weeks),
         "start_time": str(ex0.get("srt_test_start_time", "")),
         "end_time": str(ex0.get("srt_test_end_time", "")),
@@ -168,7 +168,7 @@ def summarize_run(report_dir: Path, cp_fw: str, source: str,
     return row
 
 
-def write_history(src: Path, out_path: Path) -> None:
+def write_history(src: Path, out_path: Path, site: str) -> None:
     retest_root, excl_root = src / bfd.RETEST_DIRNAME, src / bfd.EXCLUDED_DIRNAME
     # Same bucketing as build_fail_data.main, so a run carries the same source here
     # and in fail.csv: a run listed in EXCLUDED_REPORTS counts as excluded right now,
@@ -186,7 +186,7 @@ def write_history(src: Path, out_path: Path) -> None:
         r
         for dirs, source, rnd in buckets
         for d in dirs
-        if (r := summarize_run(d, cp_fw.get(d.name, ""), source, rnd))
+        if (r := summarize_run(d, cp_fw.get(d.name, ""), source, site, rnd))
     ]
     rows.sort(key=lambda r: r["run"])
 
@@ -205,7 +205,7 @@ def main(site: str = common.DEFAULT_SITE) -> int:
     if not src.is_dir():
         print(f"reports dir not found for site '{site}': {src}")
         return 1
-    write_history(src, data_dir / "srt_history.csv")
+    write_history(src, data_dir / "srt_history.csv", site)
     return 0
 
 

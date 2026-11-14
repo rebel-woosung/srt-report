@@ -99,22 +99,26 @@ def device_stats(src: Path, fail_csv: Path) -> list[dict]:
                 if not sid:
                     continue
                 end = ex.get("srt_test_end_time", "")
-                per_serial.setdefault(sid, []).append((end, is_retest, rec, d))
+                unbinned_pass = common.unbinned_result(d, rec) == "PASS"
+                per_serial.setdefault(sid, []).append((end, is_retest, rec, d, unbinned_pass))
 
     def grade_of(entry) -> str:
         return str(entry[2].get("extra", {}).get("module_grade", "")).strip()
 
+    def passed(entry) -> bool:
+        return bool(grade_of(entry)) or entry[4]
+
     devices = []
     for sid, entries in per_serial.items():
         entries.sort(key=lambda e: (bfd.parse_dt(e[0]) is None, bfd.parse_dt(e[0]) or e[0]))
-        passes = [e for e in entries if grade_of(e)]
+        passes = [e for e in entries if passed(e)]
         win = passes[-1] if passes else entries[-1]  # latest passing run, else latest
         grade = grade_of(win)
         win_bin = str(win[2].get("extra", {}).get("bin", ""))
         # A device that earned a grade in a round PASSED that round (even a B1/D1
         # downgrade), so a fail_binning event there is not a round fail.
-        r1_passed = any(grade_of(e) for e in entries if not e[1])
-        r2_passed = any(grade_of(e) for e in entries if e[1])
+        r1_passed = any(passed(e) for e in entries if not e[1])
+        r2_passed = any(passed(e) for e in entries if e[1])
 
         def first_nonempty(field: str) -> str:
             return next((v for e in entries
@@ -122,7 +126,7 @@ def device_stats(src: Path, fail_csv: Path) -> list[dict]:
         fw_version = first_nonempty("cp_fw_version")   # empty for a boot-failed device
         srt_version = first_nonempty("srt_pgm_ver")
 
-        if grade:
+        if passes:
             result = "Pass"
         elif sid in fail_serials:
             result = "Fail"

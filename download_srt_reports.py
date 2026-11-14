@@ -3,7 +3,9 @@
 Download SRT reports for a site from the rb-srt-mgmt-engine API.
 
 Pick the site with ``--site`` (config in common.SITES): it sets the API URL, the
-reports dir, and the default ``since`` cutoff (pega=2026-07-09, rtower=all).
+reports dir, the default ``since`` cutoff (pega=2026-07-09, rtower/sangdaewon=all),
+and which servers it takes (rtower and sangdaewon share one API; the 상대원
+``rebel-NN`` hosts go to sangdaewon only).
 Every report at or after ``since`` (by the run time in its name,
 ``..._SRT_YYYYMMDDTHHMMSS_...``) is fetched as a zip via
 ``/api/v1/reports/{name}/download``, extracted into
@@ -28,6 +30,7 @@ Analysis of the downloaded reports lives in ``build_fail_data.py``.
 Usage:
     python download_srt_reports.py                 # site pega (default)
     python download_srt_reports.py --site rtower   # all reports from rtower
+    python download_srt_reports.py --site sangdaewon
     python download_srt_reports.py --site pega --since 2026-08-01
     python download_srt_reports.py --json
 """
@@ -77,7 +80,7 @@ def parse_server(name: str) -> str:
     return m.group(2) if m else ""
 
 
-def collect_reports(payload: dict, since: date | None) -> list[dict]:
+def collect_reports(payload: dict, since: date | None, site: str) -> list[dict]:
     reports = []
     for item in payload.get("items", []):
         if item.get("type") != "dir":
@@ -85,6 +88,8 @@ def collect_reports(payload: dict, since: date | None) -> list[dict]:
         name = item.get("name", "")
         run_time = parse_run_time(name)
         if run_time is None or (since is not None and run_time.date() < since):
+            continue
+        if not common.site_has_server(site, parse_server(name)):
             continue
         reports.append(
             {
@@ -99,15 +104,15 @@ def collect_reports(payload: dict, since: date | None) -> list[dict]:
     return reports
 
 
-def exclusion_note(report_dir: Path, keep_interrupted: bool) -> str | None:
+def exclusion_note(report_dir: Path, keep_interrupted: bool, site: str) -> str | None:
     """Why this report goes to ``_excluded`` (the printed note), or None if it does
     not. common.exclusion_reason is the shared rule (so collect_srt_history labels a
     run identically); ``--keep-interrupted`` drops just the interrupted clause."""
     if not keep_interrupted:
-        return common.exclusion_reason(report_dir)
+        return common.exclusion_reason(report_dir, site)
     if common.is_excluded_report(report_dir.name):
         return "listed in common.EXCLUDED_REPORTS"
-    return common.report_reject_reason(report_dir)
+    return common.report_reject_reason(report_dir, site)
 
 
 def is_retest(report_dir: Path) -> bool:
@@ -138,7 +143,7 @@ def fetch_report_zip(base_url: str, name: str, dest_dir: Path, timeout: float = 
 
 
 def download_and_classify(
-    base_url: str, reports: list[dict], dest_dir: Path, keep_interrupted: bool
+    base_url: str, reports: list[dict], dest_dir: Path, keep_interrupted: bool, site: str
 ) -> tuple[list[dict], list[tuple[dict, str]]]:
     """Ensure each report is present, then (re)classify it into the dest root
     (kept) or an ``_*`` bucket (``_excluded`` for interrupted/rejected runs,
@@ -174,7 +179,7 @@ def download_and_classify(
         # (Re)classify: choose the target bucket (None = kept in dest root).
         # Validity wins over retest, so an excluded/interrupted/rejected retest run
         # still lands in _excluded (see exclusion_note for the order inside it).
-        if (reason := exclusion_note(current, keep_interrupted)):
+        if (reason := exclusion_note(current, keep_interrupted, site)):
             target, note = EXCLUDED_DIRNAME, reason
         elif is_retest(current):
             target, note = RETEST_DIRNAME, "retest, binning_test_round >= 2"
@@ -231,7 +236,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--since",
         help="Cutoff date YYYY-MM-DD (inclusive). Default: the site's setting "
-             "(pega=2026-07-09, rtower=all).",
+             "(pega=2026-07-09, rtower/sangdaewon=all).",
     )
     parser.add_argument(
         "--keep-interrupted",
@@ -259,9 +264,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Failed to fetch {url}{REPORTS_PATH}: {e}", file=sys.stderr)
         return 1
 
-    reports = collect_reports(payload, since)
+    reports = collect_reports(payload, since, args.site)
 
-    kept, excluded = download_and_classify(url, reports, reports_dir, args.keep_interrupted)
+    kept, excluded = download_and_classify(url, reports, reports_dir, args.keep_interrupted, args.site)
     print(f"\nDone. {len(kept)} kept, {len(excluded)} excluded.")
     buckets: dict[str, list[str]] = {}
     for r, bucket in excluded:
